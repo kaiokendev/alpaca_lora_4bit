@@ -41,14 +41,16 @@ else:
     autograd_4bit.switch_backend_to('cuda')
 
 import sys
+import os
 
 import peft
 import peft.tuners.lora
 
+import wandb
 import torch
 import transformers
 from autograd_4bit import load_llama_model_4bit_low_ram
-from peft import LoraConfig, get_peft_model, get_peft_model_state_dict, PeftModel
+from peft import LoraConfig, get_peft_model, get_peft_model_state_dict, PeftModel, set_peft_model_state_dict
 
 # ! Config
 import train_data
@@ -59,6 +61,9 @@ if ft_config.local_rank == 0:
 
 if ft_config.gradient_checkpointing:
     print('Disable Dropout.')
+
+if ft_config.mbatch_size > ft_config.batch_size:
+    raise Exception('batch_size need to be larger than mbatch_size.')
 
 # Load Basic Model
 model, tokenizer = load_llama_model_4bit_low_ram(ft_config.llama_q4_config_dir,
@@ -88,7 +93,7 @@ else:
         else:
             device_map = {'': 0}
     print('Device map for lora:', device_map)
-    model = PeftModel.from_pretrained(model, ft_config.lora_apply_dir, device_map=device_map, torch_dtype=torch.float32)
+    model = PeftModel.from_pretrained(model, ft_config.lora_apply_dir, device_map=device_map, torch_dtype=torch.float32, is_trainable=True)
     print(ft_config.lora_apply_dir, 'loaded')
 
 
@@ -115,6 +120,9 @@ if not ft_config.skip:
     elif ft_config.ds_type == "gpt4all" and not ft_config.skip:
         #### GPT4All Data
         data = train_data.TrainGPT4All(ft_config.dataset, ft_config.val_set_size, tokenizer, ft_config.cutoff_len)
+    elif ft_config.ds_type == "bluemoon" and not ft_config.skip:
+        #### Blue Moon Data
+        data = train_data.TrainBlueMoon(ft_config.dataset, ft_config.val_set_size, tokenizer, ft_config.cutoff_len)        
     else:
         raise NotImplementedError("ERROR: Unknown dataset format")
     data.prepare_data(thd=ft_config.txt_row_thd, use_eos_token=ft_config.use_eos_token)
@@ -130,6 +138,16 @@ if not ft_config.skip:
     if not ft_config.ddp and torch.cuda.device_count() > 1:
         model.is_parallelizable = True
         model.model_parallel = True
+        
+    # Count eval count for wandb
+    if ft_config.val_set_size > 0:
+        eval_count = 10
+        eval_steps = max(
+            ft_config.logging_steps, (len(data.train_data) + len(data.val_data)) // (eval_count*ft_config.mbatch_size)
+        )
+        print(f"Run eval every {eval_steps} steps")
+    else:
+        eval_steps = 0
 
     training_arguments = transformers.TrainingArguments(
         per_device_train_batch_size=ft_config.mbatch_size,
@@ -140,9 +158,9 @@ if not ft_config.skip:
         learning_rate=ft_config.lr,
         fp16=True,
         logging_steps=ft_config.logging_steps,
-        evaluation_strategy="no",
+        evaluation_strategy="steps" if eval_steps != 0 else "no",
         save_strategy="steps",
-        eval_steps=None,
+        eval_steps=eval_steps if eval_steps != 0 else None,
         save_steps=ft_config.save_steps,
         output_dir=ft_config.lora_out_dir,
         save_total_limit=ft_config.save_total_limit,
@@ -170,11 +188,17 @@ if not ft_config.skip:
         transformers.logging.set_verbosity_info()
 
     # Run Trainer
-    if ft_config.resume_checkpoint:
-        print('Resuming from {} ...'.format(ft_config.resume_checkpoint))
-        trainer.train(ft_config.resume_checkpoint)
-    else:
-        trainer.train()
+    with wandb.init(project="alpaca_lora_4bit") as run:
+        if ft_config.resume_checkpoint:
+            print('Resuming from {} ...'.format(ft_config.resume_checkpoint))
+            state_dict_peft = torch.load(os.path.join(ft_config.resume_checkpoint, 'pytorch_model.bin'), map_location='cpu')
+            set_peft_model_state_dict(model, state_dict_peft)
+            trainer.train(ft_config.resume_checkpoint)
+        else:
+            trainer.train()
+
+    # Restore old model state dict
+    model.state_dict = old_state_dict
 
     print('Train completed.')
 
