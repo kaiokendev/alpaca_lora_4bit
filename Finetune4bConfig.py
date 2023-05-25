@@ -15,7 +15,7 @@ class Finetune4bConfig:
                  warmup_steps: int, save_steps: int, save_total_limit: int, logging_steps: int,
                  checkpoint: bool, skip: bool, verbose: bool,
                  txt_row_thd: int, use_eos_token: bool, groupsize: int, v1: bool,
-                 local_rank: int, flash_attention: bool, xformers: bool, backend: str
+                 local_rank: int, flash_attention: bool, xformers: bool, backend: str, xpos: bool
                  ):
         """
         Args:
@@ -91,7 +91,7 @@ class Finetune4bConfig:
         self.flash_attention = flash_attention
         self.xformers = xformers
         self.backend = backend
-
+        self.xpos = xpos
 
     def __str__(self) -> str:
         s = f"\nParameters:\n{'config':-^20}\n{self.dataset=}\n{self.ds_type=}\n{self.lora_out_dir=}\n{self.lora_apply_dir=}\n{self.llama_q4_config_dir=}\n{self.llama_q4_model=}\n\n" +\
@@ -103,5 +103,5 @@ class Finetune4bConfig:
         f"{self.logging_steps=}\n" +\
         f"{self.checkpoint=}\n{self.skip=}\n" +\
         f"{self.world_size=}\n{self.ddp=}\n{self.device_map=}\n" +\
-        f"{self.groupsize=}\n{self.v1=}\n{self.backend=}\n"
+        f"{self.groupsize=}\n{self.v1=}\n{self.backend=}\n{self.xpos=}\n"
         return s.replace("self.", "")

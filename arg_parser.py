@@ -74,6 +74,9 @@ def parse_commandline():
 
     # Train Backend
     parser_training.add_argument("--backend", type=str, default='cuda', help="Backend to use. Triton or Cuda.")
+    
+    # xPos RoPE Fix
+    parser_training.add_argument("--xpos", action="store_true", help="Use xPos rotary embedding to extrapolate over longer seq len than the model is trained on")
 
     return vars(parser.parse_args())
 

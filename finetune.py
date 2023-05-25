@@ -30,6 +30,10 @@ elif ft_config.xformers:
     from monkeypatch.llama_attn_hijack_xformers import hijack_llama_attention
     hijack_llama_attention()
 
+if ft_config.xpos:
+    from monkeypatch.llama_rope_xpos_monkey_patch import replace_llama_rope_with_xpos_rope
+    replace_llama_rope_with_xpos_rope()
+
 import autograd_4bit
 if ft_config.backend.lower() == 'triton':
     autograd_4bit.switch_backend_to('triton')
