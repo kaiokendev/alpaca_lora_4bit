@@ -117,4 +117,5 @@ def get_config() -> Finetune4bConfig:
         flash_attention=args["flash_attention"],
         xformers=args["xformers"],
         backend=args["backend"],
+        xpos=args['xpos']
     )
