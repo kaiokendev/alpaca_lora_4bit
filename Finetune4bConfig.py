@@ -1,22 +1,46 @@
 import os
+
+
 class Finetune4bConfig:
-    """Config holder for LLaMA 4bit finetuning
-    """
-    def __init__(self, dataset: str, ds_type: str,
-                 lora_out_dir: str, lora_apply_dir: str, resume_checkpoint: str,
-                 llama_q4_config_dir: str, llama_q4_model: str,
-                 mbatch_size: int, batch_size: int,
-                 epochs: int, lr: float,
-                 cutoff_len: int,
-                 lora_r: int, lora_alpha: int, lora_dropout: float,
-                 val_set_size: float,
-                 gradient_checkpointing: bool,
-                 gradient_checkpointing_ratio: float,
-                 warmup_steps: int, save_steps: int, save_total_limit: int, logging_steps: int,
-                 checkpoint: bool, skip: bool, verbose: bool,
-                 txt_row_thd: int, use_eos_token: bool, groupsize: int, v1: bool,
-                 local_rank: int, flash_attention: bool, xformers: bool, backend: str, xpos: bool
-                 ):
+    """Config holder for LLaMA 4bit finetuning"""
+
+    def __init__(
+        self,
+        dataset: str,
+        ds_type: str,
+        lora_out_dir: str,
+        lora_apply_dir: str,
+        resume_checkpoint: str,
+        llama_q4_config_dir: str,
+        llama_q4_model: str,
+        mbatch_size: int,
+        batch_size: int,
+        epochs: int,
+        lr: float,
+        cutoff_len: int,
+        lora_r: int,
+        lora_alpha: int,
+        lora_dropout: float,
+        val_set_size: float,
+        gradient_checkpointing: bool,
+        gradient_checkpointing_ratio: float,
+        warmup_steps: int,
+        save_steps: int,
+        save_total_limit: int,
+        logging_steps: int,
+        checkpoint: bool,
+        skip: bool,
+        verbose: bool,
+        txt_row_thd: int,
+        use_eos_token: bool,
+        groupsize: int,
+        v1: bool,
+        local_rank: int,
+        flash_attention: bool,
+        xformers: bool,
+        backend: str,
+        xpos: bool,
+    ):
         """
         Args:
             dataset (str): Path to dataset file
@@ -67,8 +91,10 @@ class Finetune4bConfig:
         self.cutoff_len = cutoff_len
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha
-        self.lora_dropout = 0 if gradient_checkpointing else lora_dropout # should be 0 if gradient checkpointing is on
-        self.val_set_size = int(val_set_size) if val_set_size > 1.0 else float(val_set_size)
+        self.lora_dropout = lora_dropout  # should be 0 if gradient checkpointing is on
+        self.val_set_size = (
+            int(val_set_size) if val_set_size > 1.0 else float(val_set_size)
+        )
         self.gradient_checkpointing = gradient_checkpointing
         self.gradient_checkpointing_ratio = gradient_checkpointing_ratio
         self.warmup_steps = warmup_steps
@@ -85,7 +111,9 @@ class Finetune4bConfig:
         self.ddp = self.world_size != 1
         self.device_map = "auto" if not self.ddp else {"": self.local_rank}
         if self.ddp:
-            self.gradient_accumulation_steps = self.gradient_accumulation_steps // self.world_size
+            self.gradient_accumulation_steps = (
+                self.gradient_accumulation_steps // self.world_size
+            )
         self.groupsize = groupsize
         self.v1 = v1
         self.flash_attention = flash_attention
@@ -94,14 +122,16 @@ class Finetune4bConfig:
         self.xpos = xpos
 
     def __str__(self) -> str:
-        s = f"\nParameters:\n{'config':-^20}\n{self.dataset=}\n{self.ds_type=}\n{self.lora_out_dir=}\n{self.lora_apply_dir=}\n{self.llama_q4_config_dir=}\n{self.llama_q4_model=}\n\n" +\
-        f"{'training':-^20}\n" +\
-        f"{self.mbatch_size=}\n{self.batch_size=}\n{self.gradient_accumulation_steps=}\n{self.epochs=}\n{self.lr=}\n{self.cutoff_len=}\n" +\
-        f"{self.lora_r=}\n{self.lora_alpha=}\n{self.lora_dropout=}\n{self.val_set_size=}\n" +\
-        f"{self.gradient_checkpointing=}\n{self.gradient_checkpointing_ratio=}\n" +\
-        f"{self.warmup_steps=}\n{self.save_steps=}\n{self.save_total_limit=}\n" +\
-        f"{self.logging_steps=}\n" +\
-        f"{self.checkpoint=}\n{self.skip=}\n" +\
-        f"{self.world_size=}\n{self.ddp=}\n{self.device_map=}\n" +\
-        f"{self.groupsize=}\n{self.v1=}\n{self.backend=}\n{self.xpos=}\n"
+        s = (
+            f"\nParameters:\n{'config':-^20}\n{self.dataset=}\n{self.ds_type=}\n{self.lora_out_dir=}\n{self.lora_apply_dir=}\n{self.llama_q4_config_dir=}\n{self.llama_q4_model=}\n\n"
+            + f"{'training':-^20}\n"
+            + f"{self.mbatch_size=}\n{self.batch_size=}\n{self.gradient_accumulation_steps=}\n{self.epochs=}\n{self.lr=}\n{self.cutoff_len=}\n"
+            + f"{self.lora_r=}\n{self.lora_alpha=}\n{self.lora_dropout=}\n{self.val_set_size=}\n"
+            + f"{self.gradient_checkpointing=}\n{self.gradient_checkpointing_ratio=}\n"
+            + f"{self.warmup_steps=}\n{self.save_steps=}\n{self.save_total_limit=}\n"
+            + f"{self.logging_steps=}\n"
+            + f"{self.checkpoint=}\n{self.skip=}\n"
+            + f"{self.world_size=}\n{self.ddp=}\n{self.device_map=}\n"
+            + f"{self.groupsize=}\n{self.v1=}\n{self.backend=}\n{self.xpos=}\n"
+        )
         return s.replace("self.", "")

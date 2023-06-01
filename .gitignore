@@ -8,3 +8,4 @@ repository/
 build/
 dist/
 *.egg-info*
+wandb/
