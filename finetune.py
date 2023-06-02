@@ -62,6 +62,8 @@ import torch
 import wandb
 import transformers
 from autograd_4bit import load_llama_model_4bit_low_ram
+from trl import AutoModelForCausalLMWithValueHead, PPOConfig, PPOTrainer, set_seed
+from transformers import pipeline
 from peft import (
     LoraConfig,
     get_peft_model,
@@ -69,6 +71,8 @@ from peft import (
     PeftModel,
     set_peft_model_state_dict,
 )
+from tqdm import tqdm
+from superhotppo import compute_rewards
 
 # ! Config
 import train_data
@@ -157,7 +161,11 @@ if not ft_config.skip:
     elif ft_config.ds_type == "shot" and not ft_config.skip:
         #### SuperHOT Data
         data = train_data.TrainSHOT(
-            ft_config.dataset, ft_config.val_set_size, tokenizer, ft_config.cutoff_len
+            ft_config.dataset,
+            ft_config.val_set_size,
+            tokenizer,
+            ft_config.cutoff_len,
+            ft_config.ppo_dataset,
         )
     else:
         raise NotImplementedError("ERROR: Unknown dataset format")
@@ -190,50 +198,33 @@ if not ft_config.skip:
     else:
         eval_steps = 0
 
-    # SuperHOT curriculum learning
-    courses = [(["roleplay", "chat", "story"], 3, "Creative Writing II")]
-    # courses = [
-    #     (['code', 'logic', 'quiz', 'ask', 'ask jeeves', 'question'], 1, 'Core Knowledge I'),
-    #     (['trivia', 'jeopardy', 'question answering'], 0.5, 'Core Knowledge II'),
-    #     (['logic', 'quiz', 'ask', 'question', 'qa', 'trivia', 'jeopardy', 'question answering', 'google result'], 0.5, 'Core Knowledge III'),
-    #     (['story'], 1, 'Creative Writing I'),
-    #     (['chat', 'story'], 0.25, 'Chat & Social Writing'),
-    #     (['code', 'logic', 'quiz', 'ask', 'question', 'qa', 'trivia', 'jeopardy', 'question answering', 'google result'], 0.25, 'Grounding I'),
-    #     (['roleplay'], 1.5, 'Roleplay'),
-    #     (['roleplay', 'chat', 'story'], 0.5, 'Creative Writing II'),
-    #     (['code', 'logic', 'quiz', 'ask', 'question', 'qa', 'trivia', 'jeopardy', 'question answering', 'google result'], 0.4, 'Grounding II'),
-    #     (['roleplay', 'qa', 'chat', 'story', 'code', 'logic', 'quiz', 'ask', 'question', 'trivia', 'jeopardy', 'question answering', 'google result'], 1.5, 'Finals')
-    # ]
+    config = PPOConfig(
+        learning_rate=ft_config.lr,
+        log_with="wandb",
+        mini_batch_size=ft_config.mbatch_size,
+        batch_size=ft_config.batch_size,
+        gradient_accumulation_steps=ft_config.gradient_accumulation_steps,
+    )
 
-    def filter_dataset_for_course(modes):
-        data.train_data.filter(lambda x: x["mode"] in modes)
+    if ft_config.train_ppo:
+        optimizer = torch.optim.Adam(
+            filter(lambda p: p.requires_grad, model.parameters()),
+            lr=config.learning_rate,
+        )
 
-    # training_arguments = transformers.TrainingArguments(
-    #     per_device_train_batch_size=ft_config.mbatch_size,
-    #     gradient_accumulation_steps=ft_config.gradient_accumulation_steps,
-    #     warmup_steps=ft_config.warmup_steps,
-    #     optim="adamw_torch",
-    #     num_train_epochs=ft_config.epochs,
-    #     learning_rate=ft_config.lr,
-    #     fp16=True,
-    #     logging_steps=ft_config.logging_steps,
-    #     evaluation_strategy="no",
-    #     save_strategy="steps",
-    #     # eval_steps=eval_steps if eval_steps != 0 else None,
-    #     save_steps=ft_config.save_steps,
-    #     output_dir=ft_config.lora_out_dir,
-    #     save_total_limit=ft_config.save_total_limit,
-    #     load_best_model_at_end=False,
-    #     ddp_find_unused_parameters=False if ft_config.ddp else None,
-    # )
+        # We then build the PPOTrainer, passing the model, the reference model, the tokenizer
+        ppo_trainer = PPOTrainer(
+            config,
+            model,
+            ref_model=None,
+            tokenizer=tokenizer,
+            dataset=data.ppo_data,
+            data_collator=transformers.DataCollatorForLanguageModeling(
+                tokenizer, mlm=False
+            ),
+            optimizer=optimizer,
+        )
 
-    # trainer = transformers.Trainer(
-    #     model=model,
-    #     tokenizer=tokenizer,
-    #     train_dataset=data.train_data,
-    #     eval_dataset=data.val_data,
-    #     args=training_arguments,
-    # )
     model.config.use_cache = False
 
     # Set Model dict
@@ -248,104 +239,142 @@ if not ft_config.skip:
 
     # Run Trainer
     with wandb.init(project="alpaca_lora_4bit") as run:
-        resuming = False
-        if ft_config.resume_checkpoint:
-            print("Resuming from {} ...".format(ft_config.resume_checkpoint))
-            state_dict_peft = torch.load(
-                os.path.join(ft_config.resume_checkpoint, "pytorch_model.bin"),
-                map_location="cpu",
+        if ft_config.train:
+            resuming = False
+            if ft_config.resume_checkpoint:
+                print("Resuming from {} ...".format(ft_config.resume_checkpoint))
+                state_dict_peft = torch.load(
+                    os.path.join(ft_config.resume_checkpoint, "pytorch_model.bin"),
+                    map_location="cpu",
+                )
+                set_peft_model_state_dict(model, state_dict_peft)
+                resuming = True
+                # trainer.train(ft_config.resume_checkpoint)
+            # else:
+            #     trainer.train()
+
+            print(data.train_data[0])
+
+            training_arguments = transformers.TrainingArguments(
+                per_device_train_batch_size=ft_config.mbatch_size,
+                gradient_accumulation_steps=ft_config.gradient_accumulation_steps,
+                warmup_steps=ft_config.warmup_steps,
+                optim="adamw_torch",
+                weight_decay=0.001,
+                adam_beta1=0.9,
+                adam_beta2=0.99,
+                adam_epsilon=0.001,
+                lr_scheduler_type="linear",
+                num_train_epochs=ft_config.epochs,
+                learning_rate=ft_config.lr,
+                fp16=True,
+                logging_steps=ft_config.logging_steps,
+                evaluation_strategy="no",
+                save_strategy="steps",
+                # eval_steps=eval_steps if eval_steps != 0 else None,
+                save_steps=ft_config.save_steps,
+                output_dir=ft_config.lora_out_dir,
+                save_total_limit=ft_config.save_total_limit,
+                load_best_model_at_end=False,
+                ddp_find_unused_parameters=False if ft_config.ddp else None,
             )
-            set_peft_model_state_dict(model, state_dict_peft)
-            resuming = True
-            # trainer.train(ft_config.resume_checkpoint)
-        # else:
-        #     trainer.train()
 
-        print(data.train_data[0])
+            trainer = transformers.Trainer(
+                model=model,
+                tokenizer=tokenizer,
+                train_dataset=data.train_data,
+                eval_dataset=data.val_data,
+                args=training_arguments,
+                data_collator=transformers.DataCollatorForLanguageModeling(
+                    tokenizer, mlm=False
+                ),
+            )
 
-        training_arguments = transformers.TrainingArguments(
-            per_device_train_batch_size=ft_config.mbatch_size,
-            gradient_accumulation_steps=ft_config.gradient_accumulation_steps,
-            warmup_steps=ft_config.warmup_steps,
-            optim="adamw_torch",
-            weight_decay=0.0,
-            adam_beta1=0.9,
-            adam_beta2=0.99,
-            adam_epsilon=0.001,
-            lr_scheduler_type="linear",
-            num_train_epochs=ft_config.epochs,
-            learning_rate=ft_config.lr,
-            fp16=True,
-            logging_steps=ft_config.logging_steps,
-            evaluation_strategy="no",
-            save_strategy="steps",
-            # eval_steps=eval_steps if eval_steps != 0 else None,
-            save_steps=ft_config.save_steps,
-            output_dir=ft_config.lora_out_dir,
-            save_total_limit=ft_config.save_total_limit,
-            load_best_model_at_end=False,
-            ddp_find_unused_parameters=False if ft_config.ddp else None,
-        )
+            if resuming:
+                trainer.train(ft_config.resume_checkpoint)
+            else:
+                trainer.train()
 
-        trainer = transformers.Trainer(
-            model=model,
-            tokenizer=tokenizer,
-            train_dataset=data.train_data,
-            eval_dataset=data.val_data,
-            args=training_arguments,
-            data_collator=transformers.DataCollatorForLanguageModeling(
-                tokenizer, mlm=False
-            ),
-        )
+        if ft_config.ppo_train:
+            device = ppo_trainer.accelerator.device
+            if ppo_trainer.accelerator.num_processes == 1:
+                device = (
+                    0 if torch.cuda.is_available() else "cpu"
+                )  # to avoid a `pipeline` bug
 
-        if resuming:
-            trainer.train(ft_config.resume_checkpoint)
-        else:
-            trainer.train()
+            model.eval()
 
-        # acc_course_epoch = 0
-        # for course in courses:
-        #     # if ft_config.resume_course_epoch ...
-        #     print("Beginning course", course[2], "consisting of", course[0], "lasting", course[1], "epochs")
+            # Merge the model with the currently attached LoRA
+            key_list = [
+                key
+                for key, _ in model.base_model.model.named_modules()
+                if "lora" not in key
+            ]
+            for key in key_list:
+                parent, target, target_name = model.base_model._get_submodules(key)
+                if isinstance(target, peft.tuners.lora.Linear):
+                    bias = target.bias is not None
+                    new_module = torch.nn.Linear(
+                        target.in_features, target.out_features, bias=bias
+                    )
+                    model.base_model._replace_module(
+                        parent, target_name, new_module, target
+                    )
 
-        #     training_arguments = transformers.TrainingArguments(
-        #         per_device_train_batch_size=ft_config.mbatch_size,
-        #         gradient_accumulation_steps=ft_config.gradient_accumulation_steps,
-        #         warmup_steps=ft_config.warmup_steps,
-        #         optim="adamw_torch",
-        #         weight_decay=0.0,
-        #         adam_beta1=0.9,
-        #         adam_beta2=0.95,
-        #         adam_epsilon=1e-6,
-        #         lr_scheduler_type="cosine",
-        #         num_train_epochs=ft_config.epochs,
-        #         learning_rate=ft_config.lr,
-        #         fp16=True,
-        #         logging_steps=ft_config.logging_steps,
-        #         evaluation_strategy="no",
-        #         save_strategy="steps",
-        #         # eval_steps=eval_steps if eval_steps != 0 else None,
-        #         save_steps=ft_config.save_steps,
-        #         output_dir=ft_config.lora_out_dir,
-        #         save_total_limit=ft_config.save_total_limit,
-        #         load_best_model_at_end=False,
-        #         ddp_find_unused_parameters=False if ft_config.ddp else None,
-        #     )
+            model = model.base_model.model
 
-        #     trainer = transformers.Trainer(
-        #         model=model,
-        #         tokenizer=tokenizer,
-        #         train_dataset=data.train_data.filter(lambda x: x['mode'] in course[0]),
-        #         eval_dataset=data.val_data,
-        #         args=training_arguments,
-        #     )
+            # Make a new LoRA on top of the original model
+            lora_config = LoraConfig(
+                r=ft_config.lora_r,
+                lora_alpha=ft_config.lora_alpha,
+                target_modules=["q_proj", "v_proj"],
+                lora_dropout=ft_config.lora_dropout,
+                bias="none",
+                task_type="CAUSAL_LM",
+            )
+            model = get_peft_model(model, lora_config)
+            model = AutoModelForCausalLMWithValueHead.from_pretrained(model)
+            model.gradient_checkpointing_disable = (
+                model.pretrained_model.gradient_checkpointing_disable
+            )
+            model.gradient_checkpointing_enable = (
+                model.pretrained_model.gradient_checkpointing_enable
+            )
 
-        #     if resuming:
-        #         trainer.train(ft_config.resume_checkpoint)
-        #     else:
-        #         trainer.train()
+            # Greedy sampling
+            generation_kwargs = {
+                "min_length": -1,
+                "top_k": 0.0,
+                "top_p": 1.0,
+                "do_sample": True,
+            }
 
-        #     acc_course_epoch += course[1]
+            # Sample responses from the merged model and use it to train the PPO LoRA
+            for epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
+                query_tensors = batch["input_ids"]
+
+                model.gradient_checkpointing_disable()
+                model.pretrained_model.config.use_cache = True
+
+                # Get response from Causal LM
+                response_tensors = []
+                for query in query_tensors:
+                    generation_kwargs["max_new_tokens"] = 200
+                    response = ppo_trainer.generate(query, **generation_kwargs)
+                    response_tensors.append(response.squeeze()[-200:])
+                batch["response"] = [
+                    tokenizer.decode(r.squeeze()) for r in response_tensors
+                ]
+
+                # Get rewards
+                rewards = compute_rewards(zip(batch["response"], batch["expectations"]))
+
+                # Run PPO step
+                model.gradient_checkpointing_enable()
+                model.pretrained_model.config.use_cache = False
+
+                stats = ppo_trainer.step(query_tensors, response_tensors, rewards)
+                ppo_trainer.log_stats(stats, batch, rewards)
 
     # Restore old model state dict
     model.state_dict = old_state_dict

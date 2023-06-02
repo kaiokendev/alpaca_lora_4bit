@@ -1,3 +1,4 @@
+import copy
 import torch
 
 from abc import ABC, abstractmethod
@@ -17,7 +18,12 @@ class ATrainData(ABC):
 
     @abstractmethod
     def __init__(
-        self, dataset: str, val_set_size: int, tokenizer, cutoff_len: int
+        self,
+        dataset: str,
+        val_set_size: int,
+        tokenizer,
+        cutoff_len: int,
+        ppo_dataset: str = None,
     ) -> None:
         """
         Args:
@@ -27,10 +33,12 @@ class ATrainData(ABC):
         """
         self.tokenizer = tokenizer
         self.dataset = dataset
+        self.ppo_dataset = ppo_dataset
         self.val_set_size = val_set_size
         self.cutoff_len = cutoff_len
         self.train_data = None
         self.val_data = None
+        self.ppo_data = None
 
     @abstractmethod
     def tokenize(self, prompt: str) -> Dict[str, Any]:
@@ -47,6 +55,11 @@ class ATrainData(ABC):
     @abstractmethod
     def prepare_data(self) -> None:
         """Loads dataset from file and prepares train_data property for trainer"""
+        pass
+
+    @abstractmethod
+    def ppo_get_rewards(self, data) -> list[float]:
+        """Computes rewards for RLHF model"""
         pass
 
 
@@ -157,23 +170,27 @@ class TrainSHOT(ATrainData):
                 truncation=True,
                 max_length=self.cutoff_len,
                 padding="max_length",
+                return_tensors="pt",
             )
 
             response_len = len(self.tokenizer(prompt)["input_ids"])
             ids = result["input_ids"]
             mask = result["attention_mask"]
-            last_token = self.cutoff_len - 1
+
             if response_len < self.cutoff_len:
-                ids[response_len] = self.tokenizer.eos_token_id
-                mask[response_len] = 1
+                ids[0][response_len] = self.tokenizer.eos_token_id
+                mask[0][response_len] = 1
             if response_len == self.cutoff_len:
-                ids += [self.tokenizer.eos_token_id]
-                mask += [1]
+                ids[0] += self.tokenizer.eos_token_id
+                mask[0] += 1
 
-            result["input_ids"] = ids
-            result["attention_mask"] = mask
+            target = copy.deepcopy(ids)
+            parts = prompt.split("---")
+            instruction = "---" + parts[1] + "---"
+            instruction_len = len(self.tokenizer(instruction)["input_ids"])
+            target[0][:instruction_len] = IGNORE_TOKEN_ID
 
-            return result
+            return {"labels": target[0], "input_ids": ids[0], "attention_mask": mask[0]}
         else:
             result = self.tokenizer(
                 prompt,
@@ -183,7 +200,12 @@ class TrainSHOT(ATrainData):
             )
 
     def prepare_data(self, use_eos_token=True, **kwargs) -> None:
-        data = load_dataset("json", data_files=self.dataset)
+        if self.ppo_dataset is not None:
+            data = load_dataset(
+                "json", data_files={"train": self.dataset, "ppo": self.ppo_dataset}
+            )
+        else:
+            data = load_dataset("json", data_files={"train": self.dataset})
 
         if self.val_set_size > 0:
             train_val = data["train"].train_test_split(
@@ -220,6 +242,11 @@ class TrainSHOT(ATrainData):
             )
             self.val_data = None
 
+        if self.ppo_dataset is not None:
+            self.ppo_data = (
+                data["ppo"].shuffle().map(lambda x: self.generate_ppo_prompt())
+            )
+
         print(self.train_data[0])
 
     # Auxiliary methods
@@ -229,6 +256,17 @@ class TrainSHOT(ATrainData):
     def generate_and_tokenize_prompt(self, data_point, **kwargs):
         prompt = self.generate_prompt(data_point, **kwargs)
         return self.tokenize(prompt, **kwargs)
+
+    def generate_ppo_prompt(self, data_point, **kwargs):
+        tokenizer_out = self.tokenizer(data_point)
+        return {
+            "prompt": data_point["prompt"],
+            "expectations": data_point["expectations"],
+            "input_ids": tokenizer_out["input_ids"],
+        }
+
+    def ppo_get_rewards(self, data) -> list[float]:
+        return super().ppo_get_rewards(data)
 
 
 # Stanford Alpaca-like Data

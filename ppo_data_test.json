@@ -1,0 +1,55 @@
+[
+    {
+        "prompt": "---\nmode: list\n5 famous actors\n---\n",
+        "expectations": {
+            "sequence": {
+                "k": 5
+            }
+        }
+    },
+    {
+        "prompt": "---\nmode: listicle\n5 famous actors\n---\n",
+        "expectations": {
+            "sequence": {
+                "k": 5,
+                "reiterate": 5
+            }
+        }
+    },
+    {
+        "prompt": "---\nmode: steps\nfor: how to write a song\n---\n",
+        "expectations": {
+            "sequence": {
+                "min": 2,
+                "reiterate": true
+            }
+        }
+    },
+    {
+        "prompt": "---\nmode: steps\nfor: building a shed\n---\n",
+        "expectations": {
+            "sequence": {
+                "min": 2,
+                "reiterate": true
+            }
+        }
+    },
+    {
+        "prompt": "---\nmode: steps\nfor: acquiring a dog\n---\n",
+        "expectations": {
+            "sequence": {
+                "min": 2,
+                "reiterate": true
+            }
+        }
+    },
+    {
+        "prompt": "---\nmode: steps\nfor: How do I open up a new business?\n---\n",
+        "expectations": {
+            "sequence": {
+                "min": 2,
+                "reiterate": true
+            }
+        }
+    }
+]

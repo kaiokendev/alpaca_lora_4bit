@@ -40,6 +40,10 @@ class Finetune4bConfig:
         xformers: bool,
         backend: str,
         xpos: bool,
+        ppo_dataset: str,
+        ppo_train: bool,
+        train: bool,
+        nope: bool,
     ):
         """
         Args:
@@ -77,6 +81,7 @@ class Finetune4bConfig:
             xformers (bool): use xformers or not
         """
         self.dataset = dataset
+        self.ppo_dataset = ppo_dataset
         self.ds_type = ds_type
         self.lora_out_dir = lora_out_dir
         self.lora_apply_dir = lora_apply_dir
@@ -120,6 +125,9 @@ class Finetune4bConfig:
         self.xformers = xformers
         self.backend = backend
         self.xpos = xpos
+        self.ppo_train = ppo_train
+        self.train = train
+        self.nope = nope
 
     def __str__(self) -> str:
         s = (
@@ -133,5 +141,7 @@ class Finetune4bConfig:
             + f"{self.checkpoint=}\n{self.skip=}\n"
             + f"{self.world_size=}\n{self.ddp=}\n{self.device_map=}\n"
             + f"{self.groupsize=}\n{self.v1=}\n{self.backend=}\n{self.xpos=}\n"
+            + f"{self.ppo_dataset=}\n{self.ppo_train=}\n{self.train=}\n"
+            + f"{self.nope=}\n"
         )
         return s.replace("self.", "")
